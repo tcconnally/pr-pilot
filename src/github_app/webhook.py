@@ -21,7 +21,11 @@ from src.config import (
     GITHUB_APP_ID,
     GITHUB_APP_PRIVATE_KEY,
     MAX_DIFF_SIZE_BYTES,
-    VERIFIED_AUTO_APPROVE,
+)
+from src.review_poster import (
+    build_review_body,
+    build_review_body_with_safety_note,
+    decision_to_github_event,
 )
 
 logger = structlog.get_logger(__name__)
@@ -205,36 +209,18 @@ async def _process_pr_review(
     # Post results to GitHub
     decision = results.get("decision", "escalate_to_human")
     escalator = results.get("escalator", {})
-    review_body = ""
-    review_comments = []
 
     if escalator.get("findings"):
         finding = escalator["findings"][0] if escalator["findings"] else {}
-        review_body = finding.get("review_body", _build_fallback_review(results))
+        review_body = finding.get("review_body", build_review_body(results))
         review_comments = finding.get("review_comments", [])
     else:
-        review_body = _build_fallback_review(results)
+        review_body = build_review_body(results)
+        review_comments = []
 
-    github_event_map = {
-        "auto_approve": "APPROVE",
-        "request_changes": "REQUEST_CHANGES",
-        "escalate_to_human": "COMMENT",
-    }
-    github_event = github_event_map.get(decision, "COMMENT")
-
-    # Safety gate: the Verifier does not yet apply patches, write tests, or run
-    # project commands in a sandbox, so an LLM-only "auto_approve" must not become
-    # a binding GitHub APPROVE. Downgrade to a COMMENT unless an operator has
-    # explicitly enabled verified auto-approve (reserved for when real
-    # verification evidence exists). See issues #6/#7.
-    if github_event == "APPROVE" and not VERIFIED_AUTO_APPROVE:
-        logger.warning("auto_approve_downgraded", pr=pr_number, reason="no_verified_evidence")
-        github_event = "COMMENT"
-        review_body = (
-            "> Note: PR Pilot suggested approval, but automated approval is "
-            "disabled until changes are verified in a sandbox. Posting as a "
-            "comment for human review.\n\n"
-        ) + review_body
+    original_event = decision_to_github_event(decision)
+    github_event = decision_to_github_event(decision)
+    review_body = build_review_body_with_safety_note(results, original_event=original_event)
 
     try:
         await gh_client.post_review(
@@ -260,29 +246,3 @@ async def _process_pr_review(
         "decision": decision,
         "autonomy": results.get("autonomy"),
     }
-
-
-def _build_fallback_review(results: dict[str, Any]) -> str:
-    """Build a review body from chain results when the escalator output is missing."""
-    reviewer = results.get("reviewer", {})
-    fixer = results.get("fixer", {})
-    verifier = results.get("verifier", {})
-
-    body = "## PR Pilot Review\n\n"
-    body += f"**Reviewer (Agent 1):** {reviewer.get('summary', 'No findings.')}\n\n"
-
-    findings = reviewer.get("findings", [])
-    if findings:
-        body += "### Issues Found\n\n"
-        for f in findings:
-            body += f"- **[{f.get('severity', '?')}]** {f.get('description', 'Issue')} "
-            body += f"(`{f.get('file', '?')}:{f.get('line', '?')}`)\n"
-
-    body += f"\n**Fixer (Agent 2):** {fixer.get('summary', 'No fixes generated.')}\n"
-    body += f"\n**Verifier (Agent 4):** {verifier.get('summary', 'Verification skipped.')}\n"
-
-    decision = results.get("decision", "unknown")
-    body += f"\n**Decision:** `{decision}`\n"
-    body += "\n---\n*Review by PR Pilot — AI-native code quality service.*"
-
-    return body

@@ -16,6 +16,10 @@ import structlog
 
 from src.orchestration.engine import AgentChain
 from src.config import GEMINI_API_KEY
+from src.review_poster import (
+    build_review_body_with_safety_note,
+    decision_to_github_event,
+)
 
 
 logger = structlog.get_logger("pr-pilot-cli")
@@ -147,69 +151,6 @@ async def post_review(
             logger.info("review_posted", pr=pr_number, review_event=event)
 
 
-def build_review_body(results: dict) -> str:
-    """Build a clean PR review body from agent results."""
-    reviewer = results.get("reviewer", {})
-    fixer = results.get("fixer", {})
-    tester = results.get("tester", {})
-    verifier = results.get("verifier", {})
-    decision = results.get("decision", "unknown")
-
-    body = [
-        "## 🤖 PR Pilot Review",
-        "",
-        "### 🔍 Reviewer (Agent 1)",
-        reviewer.get("summary", "No findings."),
-        "",
-    ]
-
-    findings = reviewer.get("findings", [])
-    if findings:
-        body.append("### 📋 Issues Found")
-        body.append("")
-        for f in findings:
-            sev = f.get("severity", "?").upper()
-            cat = f.get("category", "?")
-            desc = f.get("description", "Issue")
-            file_path = f.get("file", "?")
-            line = f.get("line", "")
-            loc = f"`{file_path}" + (f":{line}`" if line else "`")
-            body.append(f"- **[{sev}]** {cat} — {desc} ({loc})")
-
-    body.extend([
-        "",
-        "### 🔧 Fixer (Agent 2)",
-        fixer.get("summary", "No fixes generated."),
-        "",
-        "### 🧪 Tester (Agent 3)",
-        tester.get("summary", "No tests generated."),
-        "",
-        "### ✅ Verifier (Agent 4)",
-        verifier.get("summary", "Verification skipped."),
-        "",
-    ])
-
-    if decision == "auto_approve":
-        body.append("### 🚀 Decision: AUTO APPROVE")
-        body.append("All checks passed. This PR is safe to merge.")
-    elif decision == "request_changes":
-        body.append("### ⚠️ Decision: REQUEST CHANGES")
-        body.append("Issues found. Please review the findings above and apply suggested fixes.")
-    else:
-        body.append("### 👤 Decision: ESCALATE TO HUMAN")
-        body.append("This PR requires human review — too complex or risky for autonomous handling.")
-
-    body.extend([
-        "",
-        f"**Pipeline duration:** ~{results.get('reviewer', {}).get('duration_seconds', 0) + results.get('fixer', {}).get('duration_seconds', 0) + results.get('tester', {}).get('duration_seconds', 0) + results.get('verifier', {}).get('duration_seconds', 0) + results.get('escalator', {}).get('duration_seconds', 0):.1f}s",
-        "",
-        "---",
-        "*Review by [PR Pilot](https://github.com/tcconnally/pr-pilot) — AI-native code quality service*",
-    ])
-
-    return "\n".join(body)
-
-
 async def main():
     """Main entrypoint for GitHub Actions."""
     if not GEMINI_API_KEY:
@@ -248,17 +189,11 @@ async def main():
     chain = AgentChain()
     results = await chain.run(context)
 
-    # Build review body
+    # Build review body and map decision to GitHub event
     decision = results.get("decision", "escalate_to_human")
-    review_body = build_review_body(results)
-
-    # Map decision to GitHub review event
-    event_map = {
-        "auto_approve": "APPROVE",
-        "request_changes": "REQUEST_CHANGES",
-        "escalate_to_human": "COMMENT",
-    }
-    github_event = event_map.get(decision, "COMMENT")
+    original_event = decision_to_github_event(decision)
+    github_event = decision_to_github_event(decision)
+    review_body = build_review_body_with_safety_note(results, original_event=original_event)
 
     # Post review
     await post_review(context, review_body, github_event)

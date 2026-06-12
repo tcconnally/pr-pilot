@@ -43,6 +43,10 @@ CORS_ALLOW_ORIGINS: list[str] = [
 MAX_AGENT_RETRIES: int = int(os.getenv("MAX_AGENT_RETRIES", "3"))
 AGENT_TIMEOUT_SECONDS: int = int(os.getenv("AGENT_TIMEOUT_SECONDS", "300"))
 MAX_DIFF_SIZE_BYTES: int = int(os.getenv("MAX_DIFF_SIZE_BYTES", "500_000"))
+# Warn when an accumulated agent prompt exceeds this byte count (the
+# Escalator receives all four prior agent results and a large set of
+# findings can push the combined payload toward token limits).
+MAX_PROMPT_SIZE_WARN_BYTES: int = int(os.getenv("MAX_PROMPT_SIZE_WARN_BYTES", "500_000"))
 
 # ── Review Safety ───────────────────────────────────────────────────
 # The Verifier currently judges generated patches/tests with an LLM only; it
@@ -52,10 +56,21 @@ MAX_DIFF_SIZE_BYTES: int = int(os.getenv("MAX_DIFF_SIZE_BYTES", "500_000"))
 # sandboxed verification worker is implemented and producing real evidence.
 VERIFIED_AUTO_APPROVE: bool = os.getenv("VERIFIED_AUTO_APPROVE", "").lower() == "true"
 
+# ── Stripe ──────────────────────────────────────────────────────────
+# Base URL used for success/cancel redirects after Stripe Checkout.
+STRIPE_BASE_URL: str = os.getenv(
+    "STRIPE_BASE_URL", "https://tcconnally.github.io/pr-pilot"
+)
+
 # ── Paths ───────────────────────────────────────────────────────────
 PROJECT_ROOT: Path = Path(__file__).parent.parent
 AGENT_LOG_DIR: Path = Path(os.getenv("AGENT_LOG_DIR", str(PROJECT_ROOT / "logs" / "agents")))
 STATE_DIR: Path = Path(os.getenv("STATE_DIR", str(PROJECT_ROOT / "data" / "reviews")))
+
+# ── State Management ─────────────────────────────────────────────────
+# Maximum number of review state files to retain. Older files beyond this
+# limit are deleted on each save. Set to 0 to disable cleanup.
+MAX_REVIEW_STATES: int = int(os.getenv("MAX_REVIEW_STATES", "1000"))
 
 # ── Review Rules ────────────────────────────────────────────────────
 DEFAULT_REVIEW_RULES = {

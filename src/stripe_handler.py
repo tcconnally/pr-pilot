@@ -7,6 +7,8 @@ import structlog
 
 import stripe
 
+from src.config import STRIPE_BASE_URL
+
 logger = structlog.get_logger(__name__)
 
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
@@ -50,8 +52,8 @@ def create_checkout_session(plan: str, customer_email: str | None = None) -> dic
         session = stripe.checkout.Session.create(
             mode="subscription",
             line_items=[{"price": price_id, "quantity": 1}],
-            success_url="https://pr-pilot.dev/success?session_id={CHECKOUT_SESSION_ID}",
-            cancel_url="https://pr-pilot.dev/pricing",
+            success_url=f"{STRIPE_BASE_URL}/success?session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{STRIPE_BASE_URL}/pricing",
             customer_email=customer_email,
             allow_promotion_codes=True,
             billing_address_collection="auto",

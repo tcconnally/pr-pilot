@@ -6,7 +6,9 @@ Event → spawn chain → collect results → post to GitHub.
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import structlog
@@ -17,7 +19,7 @@ from src.agents.fixer import FixerAgent
 from src.agents.tester import TesterAgent
 from src.agents.verifier import VerifierAgent
 from src.agents.escalator import EscalatorAgent
-from src.config import STATE_DIR
+from src.config import MAX_REVIEW_STATES, STATE_DIR
 
 logger = structlog.get_logger(__name__)
 
@@ -139,8 +141,26 @@ class AgentChain:
         }
 
     def _save_state(self, chain_id: str, results: dict[str, Any]) -> None:
-        """Persist review session state to disk for audit trail."""
+        """Persist review session state to disk (atomic write) and prune old states."""
+        import tempfile
+
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         state_path = STATE_DIR / f"{chain_id}.json"
-        state_path.write_text(json.dumps(results, indent=2, default=str))
+
+        # Atomic write: write to a temp file, then rename into place.
+        fd, tmp_path = tempfile.mkstemp(suffix=".json", prefix="review-", dir=STATE_DIR)
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(results, f, indent=2, default=str)
+        except Exception:
+            os.unlink(tmp_path)
+            raise
+        Path(tmp_path).rename(state_path)
+
+        # Prune old states when we exceed the configured maximum.
+        if MAX_REVIEW_STATES > 0:
+            state_files = sorted(STATE_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime)
+            while len(state_files) > MAX_REVIEW_STATES:
+                state_files.pop(0).unlink(missing_ok=True)
+
         logger.info("state_saved", path=str(state_path))

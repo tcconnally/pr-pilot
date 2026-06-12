@@ -20,6 +20,7 @@ from src.config import (
     GEMINI_API_KEY,
     GEMINI_MODEL,
     MAX_AGENT_RETRIES,
+    MAX_PROMPT_SIZE_WARN_BYTES,
 )
 
 logger = structlog.get_logger(__name__)
@@ -87,33 +88,41 @@ class BaseAgent(ABC):
         """Call Gemini API with structured output support."""
         start = time.monotonic()
 
-        # Build generation config
-        generation_config = {
-            "temperature": 0.2,
-            "max_output_tokens": 8192,
-        }
-        if schema:
-            generation_config["response_mime_type"] = "application/json"
-            generation_config["response_schema"] = schema
+        if not GEMINI_API_KEY:
+            raise RuntimeError("GEMINI_API_KEY not set")
 
-        # Recreate model with schema if needed
+        # Warn if the prompt is approaching token limits (best-effort byte count).
+        prompt_bytes = len(prompt.encode("utf-8"))
+        if prompt_bytes > MAX_PROMPT_SIZE_WARN_BYTES:
+            self.log.warning(
+                "large_prompt",
+                agent=self.name,
+                prompt_bytes=prompt_bytes,
+                limit=MAX_PROMPT_SIZE_WARN_BYTES,
+            )
+
         import google.generativeai as genai
 
-        # Configure the SDK before constructing the model. Without this the
-        # generate_content call is unauthenticated and fails at runtime, even
-        # though the (unused) self.model property configured it elsewhere.
-        if not GEMINI_API_KEY:
-            raise RuntimeError("GEMINI_API_KEY not set — required for Gemini calls")
         genai.configure(api_key=GEMINI_API_KEY)
 
-        model = genai.GenerativeModel(
-            model_name=self.model_name,
-            system_instruction=self.system_prompt,
-            generation_config=generation_config,
-        )
+        # Reuse the cached model when no schema is needed; create a fresh one
+        # when the schema changes the generation_config (the 0.8.x SDK does not
+        # support per-request config overrides on a cached model).
+        if schema:
+            generation_config = {
+                "temperature": 0.2,
+                "max_output_tokens": 8192,
+                "response_mime_type": "application/json",
+                "response_schema": schema,
+            }
+            model = genai.GenerativeModel(
+                model_name=self.model_name,
+                system_instruction=self.system_prompt,
+                generation_config=generation_config,
+            )
+        else:
+            model = self.model  # cached from the lazy property
 
-        # Run in thread pool (google-generativeai 0.8.x is synchronous), bounded
-        # by the configured per-agent timeout so a hung call cannot block forever.
         loop = asyncio.get_event_loop()
         response = await asyncio.wait_for(
             loop.run_in_executor(None, model.generate_content, prompt),

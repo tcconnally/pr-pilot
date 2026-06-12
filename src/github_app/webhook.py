@@ -207,6 +207,27 @@ async def _process_pr_review(
     chain = AgentChain()
     results = await chain.run(pr_context)
 
+    # If an agent errored, the chain aborted — say so honestly instead of
+    # posting a review that implies the PR was analyzed and found clean.
+    pipeline_error = results.get("pipeline_error")
+    if pipeline_error:
+        msg = (
+            "## PR Pilot\n\n"
+            "Automated review pipeline could not complete: the "
+            f"**{pipeline_error['agent']}** agent encountered an error "
+            f"({pipeline_error['summary']}). No automated judgment was made — "
+            "escalating to human review."
+        )
+        try:
+            await gh_client.post_comment(owner, repo_name.split("/")[-1], pr_number, msg)
+        except Exception as exc:
+            logger.error("pipeline_error_comment_failed", error=str(exc))
+        return {
+            "status": "pipeline_error",
+            "chain_id": results.get("chain_id"),
+            "agent": pipeline_error["agent"],
+        }
+
     # Post results to GitHub
     decision = results.get("decision", "escalate_to_human")
     escalator = results.get("escalator", {})

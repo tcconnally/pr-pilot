@@ -1,22 +1,59 @@
 """
 GitHub API client for PR Pilot.
 Handles fetching PR diffs, posting reviews, and managing comments.
+
+All requests go through a retry wrapper that understands GitHub's rate
+limiting (403/429 with Retry-After / X-RateLimit-Reset) and transient
+5xx/network failures, so a burst of API calls doesn't silently drop a
+review mid-chain.
 """
 
 from __future__ import annotations
 
 import asyncio
-import structlog
+import time
 from typing import Any
+
+import structlog
 
 import httpx
 
 logger = structlog.get_logger(__name__)
 
-# Retryable HTTP status codes
-_RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
-_MAX_RETRIES = 3
-_BASE_DELAY = 2.0  # seconds
+# Statuses worth a blind retry with backoff (no rate-limit semantics).
+RETRYABLE_STATUSES = {500, 502, 503, 504}
+MAX_ATTEMPTS = 3
+# Never sleep longer than this on a rate limit — a webhook background task
+# waiting out a long reset window would pile up; surface the error instead.
+MAX_RATE_LIMIT_WAIT_SECONDS = 60.0
+
+
+def _rate_limit_wait(resp: httpx.Response) -> float | None:
+    """Seconds to wait if this response is a rate limit, else None.
+
+    GitHub signals primary limits via X-RateLimit-Remaining: 0 plus a
+    reset timestamp, and secondary limits via Retry-After. A plain 403
+    without those headers is a permission error — not retryable.
+    """
+    if resp.status_code not in (403, 429):
+        return None
+    retry_after = resp.headers.get("retry-after")
+    if retry_after:
+        try:
+            return max(float(retry_after), 1.0)
+        except ValueError:
+            return 1.0
+    if resp.headers.get("x-ratelimit-remaining") == "0":
+        reset = resp.headers.get("x-ratelimit-reset")
+        if reset:
+            try:
+                return max(float(reset) - time.time() + 1.0, 1.0)
+            except ValueError:
+                return 1.0
+        return 1.0
+    if resp.status_code == 429:
+        return 1.0
+    return None  # 403 without rate-limit markers: permission error
 
 
 class GitHubClient:
@@ -33,26 +70,76 @@ class GitHubClient:
         # R-1: shared client for connection reuse and consistent retry
         self._client: httpx.AsyncClient | None = None
 
-    def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=30.0)
-        return self._client
-
-    async def close(self) -> None:
-        if self._client and not self._client.is_closed:
-            await self._client.aclose()
-
     async def _request(
         self,
         method: str,
         url: str,
-        headers: dict | None = None,
+        *,
+        headers: dict[str, str] | None = None,
         **kwargs: Any,
     ) -> httpx.Response:
-        """Send an HTTP request with retry on rate limits and transient errors.
+        """Issue a request with rate-limit-aware retries.
 
-        Retries on 429 (rate limit), 403 with Retry-After (secondary limit),
-        and 5xx server errors. Respects Retry-After and X-RateLimit-Reset headers.
+        Retries up to MAX_ATTEMPTS on: rate limits (waiting out the
+        documented reset, capped), transient 5xx, and network errors.
+        Raises httpx.HTTPStatusError for everything else, and for
+        rate limits whose reset is too far away to wait for.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(MAX_ATTEMPTS):
+            try:
+                async with httpx.AsyncClient() as client:
+                    resp = await client.request(
+                        method, url, headers=headers or self.headers, **kwargs
+                    )
+            except httpx.TransportError as exc:
+                last_exc = exc
+                logger.warning(
+                    "github_network_error",
+                    url=url,
+                    attempt=attempt + 1,
+                    error=str(exc),
+                )
+                await asyncio.sleep(2**attempt)
+                continue
+
+            wait = _rate_limit_wait(resp)
+            if wait is not None:
+                if attempt == MAX_ATTEMPTS - 1 or wait > MAX_RATE_LIMIT_WAIT_SECONDS:
+                    logger.error(
+                        "github_rate_limited_giving_up", url=url, wait_needed=wait
+                    )
+                    resp.raise_for_status()
+                logger.warning(
+                    "github_rate_limited",
+                    url=url,
+                    wait_seconds=round(wait, 1),
+                    attempt=attempt + 1,
+                )
+                await asyncio.sleep(wait)
+                continue
+
+            if resp.status_code in RETRYABLE_STATUSES and attempt < MAX_ATTEMPTS - 1:
+                logger.warning(
+                    "github_server_error_retrying",
+                    url=url,
+                    status=resp.status_code,
+                    attempt=attempt + 1,
+                )
+                await asyncio.sleep(2**attempt)
+                continue
+
+            resp.raise_for_status()
+            return resp
+
+        # Only reachable when every attempt hit a network error.
+        raise last_exc if last_exc else RuntimeError(f"request failed: {url}")
+
+    async def get_pr_diff(self, owner: str, repo: str, pr_number: int) -> tuple[str, dict]:
+        """Fetch the raw diff and PR metadata for a pull request.
+
+        Returns:
+            Tuple of (diff_text, pr_metadata_dict)
         """
         client = self._get_client()
         merged_headers = {**self.headers, **(headers or {})}
@@ -154,7 +241,7 @@ class GitHubClient:
         diff_resp = await self._request(
             "GET",
             url,
-            headers={"Accept": "application/vnd.github.v3.diff"},
+            headers={**self.headers, "Accept": "application/vnd.github.v3.diff"},
         )
         return diff_resp.text, pr_data
 
@@ -184,25 +271,23 @@ class GitHubClient:
         File listing is best-effort: pagination is not handled, and repos with
         more than ~1000 files in a single directory will produce an incomplete
         listing. The result is only used to help the Tester agent guess the
-        test framework; an incomplete listing is harmless.
+        test framework; an incomplete listing is harmless — including when the
+        request itself fails (404 on empty repos, etc.), hence the broad catch.
         """
         url = f"{self.base_url}/repos/{owner}/{repo}/contents/{path}"
-        resp = await self._request("GET", url)
-        if resp.status_code != 200:
+        try:
+            resp = await self._request("GET", url)
+        except (httpx.HTTPStatusError, httpx.TransportError):
             return []
         contents = resp.json()
         files = []
         for item in contents:
             if item["type"] == "file":
                 files.append(item["path"])
-            elif (
-                item["type"] == "dir"
-                and item["name"] not in (".git", "node_modules", "__pycache__")
-            ):
+            elif item["type"] == "dir" and item["name"] not in (".git", "node_modules", "__pycache__"):
+                # Limited depth: only top 2 levels
                 if path.count("/") < 1:
-                    files.extend(
-                        await self.get_repo_file_listing(owner, repo, item["path"])
-                    )
+                    files.extend(await self.get_repo_file_listing(owner, repo, item["path"]))
         return files
 
     async def post_review(
@@ -238,7 +323,7 @@ class GitHubClient:
         self, installation_id: int, app_id: str, private_key: str
     ) -> str:
         """Get an installation access token for a GitHub App."""
-        import time
+        # Generate JWT for app authentication
         import jwt
 
         now = int(time.time())

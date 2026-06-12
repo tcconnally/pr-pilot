@@ -196,7 +196,54 @@
   .footer-grid a:hover { color: var(--white); }
   .footer-bottom { border-top: 1px solid rgba(255,255,255,0.1); margin-top: 40px; padding-top: 20px; text-align: center; font-size: 13px; }
 
+  /* ── Interactive Emulator ──────────────── */
+  .emulator-section { padding: 40px 0 80px; border-top: 1px solid var(--border); }
+  .emulator-container {
+    display: grid; grid-template-columns: 1fr 1.2fr; gap: 32px;
+    background: #0d1117; border: 1px solid var(--border); border-radius: 12px;
+    padding: 32px; box-shadow: var(--shadow-blue) 0px 30px 60px -15px;
+    max-width: 1000px; margin: 0 auto;
+  }
+  .emulator-controls { display: flex; flex-direction: column; gap: 20px; justify-content: center; }
+  .emulator-title { font-size: 24px; font-weight: 400; color: var(--white); letter-spacing: -0.5px; }
+  .emulator-sub { font-size: 14px; color: var(--slate); line-height: 1.5; }
+  .emulator-buttons { display: flex; flex-direction: column; gap: 10px; }
+  .btn-emu {
+    background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08);
+    color: var(--white); padding: 14px 20px; border-radius: 6px; text-align: left;
+    cursor: pointer; font-size: 14px; font-weight: 500; transition: all 0.15s;
+    font-family: inherit; display: flex; justify-content: space-between; align-items: center;
+  }
+  .btn-emu:hover { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.2); }
+  .btn-emu.active {
+    background: rgba(83,58,253,0.15); border-color: var(--purple);
+    box-shadow: 0 0 0 1px var(--purple);
+  }
+  .btn-emu .badge {
+    font-size: 11px; padding: 2px 6px; border-radius: 4px; font-weight: 600;
+  }
+  .btn-emu.active .badge-sqli { background: rgba(248,81,73,0.2); color: var(--ruby); }
+  .btn-emu.active .badge-perf { background: rgba(210,153,34,0.2); color: #d29922; }
+  .btn-emu.active .badge-style { background: rgba(88,166,255,0.2); color: var(--purple); }
+
+  .emulator-screen {
+    background: #090d13; border: 1px solid rgba(255,255,255,0.05);
+    border-radius: 8px; padding: 24px; min-height: 380px; max-height: 380px;
+    font-family: 'Source Code Pro', monospace; font-size: 12px; line-height: 1.6;
+    overflow-y: auto; color: rgba(255,255,255,0.85); display: flex; flex-direction: column;
+  }
+  .emu-line { margin-bottom: 2px; opacity: 0; transform: translateY(5px); animation: fadeInUp 0.25s forwards; }
+  @keyframes fadeInUp { to { opacity: 1; transform: translateY(0); } }
+
+  .emu-dim { color: #484f58; }
+  .emu-info { color: #58a6ff; }
+  .emu-success { color: #3fb950; }
+  .emu-warn { color: #d29922; }
+  .emu-error { color: #f85149; }
+  .emu-purple { color: #a371f7; }
+
   @media (max-width: 768px) {
+    .emulator-container { grid-template-columns: 1fr; padding: 20px; }
     .hero h1 { font-size: 32px; letter-spacing: -0.64px; }
     .pipeline { grid-template-columns: 1fr; }
     .agent-card { border-right: 1px solid var(--border); border-bottom: none; border-radius: 0 !important; }
@@ -230,6 +277,35 @@
     <div class="hero-buttons">
       <a href="#pricing" class="btn-primary">Start free trial</a>
       <a href="https://github.com/tcconnally/pr-pilot" class="btn-ghost">View on GitHub</a>
+    </div>
+  </div>
+</section>
+
+<!-- Interactive Emulator Section -->
+<section class="emulator-section">
+  <div class="container">
+    <div class="emulator-container">
+      <div class="emulator-controls">
+        <h2 class="emulator-title">Watch the agents run live</h2>
+        <p class="emulator-sub">Select a common vulnerability below to watch our 5-agent pipeline review, patch, test, and verify it in real-time.</p>
+        <div class="emulator-buttons">
+          <button class="btn-emu active" onclick="runDemo('sqli')">
+            <span>SQL Injection</span>
+            <span class="badge badge-sqli">Security</span>
+          </button>
+          <button class="btn-emu" onclick="runDemo('perf')">
+            <span>Blocking Sleep (Sync)</span>
+            <span class="badge badge-perf">Performance</span>
+          </button>
+          <button class="btn-emu" onclick="runDemo('style')">
+            <span>Nested Function Imports</span>
+            <span class="badge badge-style">Style</span>
+          </button>
+        </div>
+      </div>
+      <div class="emulator-screen" id="emu-screen">
+        <!-- Lines injected dynamically -->
+      </div>
     </div>
   </div>
 </section>
@@ -426,6 +502,129 @@ function checkout(plan) {
     window.open(url, '_blank');
   }
 }
+
+// ── Interactive Web Emulator ──────────────────────────────────────────
+const DEMOS = {
+  sqli: [
+    { text: '[PR Pilot] chain_started  chain_id=pr-12-sqli  repo=acme/api', cls: 'emu-dim' },
+    { text: '── Agent 1: REVIEWER ──', cls: 'emu-info' },
+    { text: '  Analyzing diff: app.py (+4, -1)', cls: 'emu-dim' },
+    { text: '  ⚠ [CRITICAL] security: SQL injection in delete_user(). Raw f-string inside query.', cls: 'emu-error' },
+    { text: '  ✓ reviewer complete (elapsed=14s)', cls: 'emu-dim' },
+    { text: '', cls: '' },
+    { text: '── Agent 2: FIXER ──', cls: 'emu-success' },
+    { text: '  Generating patch...', cls: 'emu-dim' },
+    { text: '  ✓ Patch generated: Replace f-string with parameterized query.', cls: 'emu-success' },
+    { text: '  ✓ fixer complete (elapsed=18s)', cls: 'emu-dim' },
+    { text: '', cls: '' },
+    { text: '── Agent 3: TESTER ──', cls: 'emu-purple' },
+    { text: '  Detected pytest framework.', cls: 'emu-dim' },
+    { text: '  Wrote 4 tests (test_delete_user, edge_cases, malicious_input).', cls: 'emu-purple' },
+    { text: '  ✓ tester complete (elapsed=15s)', cls: 'emu-dim' },
+    { text: '', cls: '' },
+    { text: '── Agent 4: VERIFIER ──', cls: 'emu-warn' },
+    { text: '  Running generated tests on patch...', cls: 'emu-dim' },
+    { text: '  ✓ All 4 tests passed, zero syntax or regression issues.', cls: 'emu-success' },
+    { text: '  ✓ verifier complete (elapsed=14s)', cls: 'emu-dim' },
+    { text: '', cls: '' },
+    { text: '── Agent 5: ESCALATOR ──', cls: 'emu-info' },
+    { text: '  Decision: AUTO APPROVE (confidence 98%)', cls: 'emu-success' },
+    { text: '  Reasoning: Fix is completely correct, verified, and well-covered.', cls: 'emu-dim' },
+    { text: '  [review] Posted approval & fixes to PR #12.', cls: 'emu-success' },
+    { text: '[PR Pilot] chain_complete  decision=auto_approve  duration=81s', cls: 'emu-info' }
+  ],
+  perf: [
+    { text: '[PR Pilot] chain_started  chain_id=pr-13-perf  repo=acme/api', cls: 'emu-dim' },
+    { text: '── Agent 1: REVIEWER ──', cls: 'emu-info' },
+    { text: '  Analyzing diff: views.py (+6, -1)', cls: 'emu-dim' },
+    { text: '  ⚠ [HIGH] performance: time.sleep(5) inside get_users() blocks thread.', cls: 'emu-warn' },
+    { text: '  ✓ reviewer complete (elapsed=13s)', cls: 'emu-dim' },
+    { text: '', cls: '' },
+    { text: '── Agent 2: FIXER ──', cls: 'emu-success' },
+    { text: '  Generating patch...', cls: 'emu-dim' },
+    { text: '  ✓ Patch generated: Refactor blocking sleep into async sleep (asyncio.sleep).', cls: 'emu-success' },
+    { text: '  ✓ fixer complete (elapsed=16s)', cls: 'emu-dim' },
+    { text: '', cls: '' },
+    { text: '── Agent 3: TESTER ──', cls: 'emu-purple' },
+    { text: '  Detected pytest-asyncio framework.', cls: 'emu-dim' },
+    { text: '  Wrote 3 async tests (test_async_sleep_concurrency).', cls: 'emu-purple' },
+    { text: '  ✓ tester complete (elapsed=16s)', cls: 'emu-dim' },
+    { text: '', cls: '' },
+    { text: '── Agent 4: VERIFIER ──', cls: 'emu-warn' },
+    { text: '  Running generated tests...', cls: 'emu-dim' },
+    { text: '  ✓ Verification passed, non-blocking views confirmed.', cls: 'emu-success' },
+    { text: '  ✓ verifier complete (elapsed=15s)', cls: 'emu-dim' },
+    { text: '', cls: '' },
+    { text: '── Agent 5: ESCALATOR ──', cls: 'emu-info' },
+    { text: '  Decision: AUTO APPROVE (confidence 95%)', cls: 'emu-success' },
+    { text: '  [review] Posted approval & fixes to PR #13.', cls: 'emu-success' },
+    { text: '[PR Pilot] chain_complete  decision=auto_approve  duration=80s', cls: 'emu-info' }
+  ],
+  style: [
+    { text: '[PR Pilot] chain_started  chain_id=pr-14-style  repo=acme/api', cls: 'emu-dim' },
+    { text: '── Agent 1: REVIEWER ──', cls: 'emu-info' },
+    { text: '  Analyzing diff: utils.py (+3, -0)', cls: 'emu-dim' },
+    { text: '  ⚠ [LOW] style: Nested import statement "import math" inside get_circle_area().', cls: 'emu-warn' },
+    { text: '  ✓ reviewer complete (elapsed=11s)', cls: 'emu-dim' },
+    { text: '', cls: '' },
+    { text: '── Agent 2: FIXER ──', cls: 'emu-success' },
+    { text: '  Generating patch...', cls: 'emu-dim' },
+    { text: '  ✓ Patch generated: Move import statement to the top of the file per PEP 8.', cls: 'emu-success' },
+    { text: '  ✓ fixer complete (elapsed=12s)', cls: 'emu-dim' },
+    { text: '', cls: '' },
+    { text: '── Agent 3: TESTER ──', cls: 'emu-purple' },
+    { text: '  Wrote 2 style/regression tests (test_import_position).', cls: 'emu-purple' },
+    { text: '  ✓ tester complete (elapsed=11s)', cls: 'emu-dim' },
+    { text: '', cls: '' },
+    { text: '── Agent 4: VERIFIER ──', cls: 'emu-warn' },
+    { text: '  ✓ Verification passed, import matches style specifications.', cls: 'emu-success' },
+    { text: '  ✓ verifier complete (elapsed=12s)', cls: 'emu-dim' },
+    { text: '', cls: '' },
+    { text: '── Agent 5: ESCALATOR ──', cls: 'emu-info' },
+    { text: '  Decision: AUTO APPROVE (confidence 100%)', cls: 'emu-success' },
+    { text: '  [review] Posted approval & fixes to PR #14.', cls: 'emu-success' },
+    { text: '[PR Pilot] chain_complete  decision=auto_approve  duration=58s', cls: 'emu-info' }
+  ]
+};
+
+let currentTimer = null;
+
+function runDemo(type) {
+  // Clear active tab
+  document.querySelectorAll('.btn-emu').forEach(btn => btn.classList.remove('active'));
+  // Set active tab
+  event.currentTarget.classList.add('active');
+  
+  // Clear previous timers
+  if (currentTimer) clearTimeout(currentTimer);
+  
+  const screen = document.getElementById('emu-screen');
+  screen.innerHTML = '';
+  
+  const lines = DEMOS[type] || [];
+  let lineIdx = 0;
+  
+  function typeLine() {
+    if (lineIdx < lines.length) {
+      const l = lines[lineIdx];
+      const div = document.createElement('div');
+      div.className = 'emu-line ' + (l.cls || '');
+      div.textContent = l.text || ' ';
+      screen.appendChild(div);
+      screen.scrollTop = screen.scrollHeight;
+      lineIdx++;
+      currentTimer = setTimeout(typeLine, l.text === '' ? 200 : 500);
+    }
+  }
+  
+  typeLine();
+}
+
+// Run default SQLi demo on load
+window.addEventListener('DOMContentLoaded', () => {
+  const sqliBtn = document.querySelector('.btn-emu');
+  if (sqliBtn) sqliBtn.click();
+});
 </script>
 </body>
 </html>

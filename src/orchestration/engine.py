@@ -153,7 +153,10 @@ class AgentChain:
             with os.fdopen(fd, "w") as f:
                 json.dump(results, f, indent=2, default=str)
         except Exception:
-            os.unlink(tmp_path)
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
             raise
         Path(tmp_path).rename(state_path)
 

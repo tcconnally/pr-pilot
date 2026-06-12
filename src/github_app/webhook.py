@@ -23,6 +23,7 @@ from src.config import (
     MAX_DIFF_SIZE_BYTES,
 )
 from src.review_poster import (
+    apply_safety_gate,
     build_review_body,
     build_review_body_with_safety_note,
     decision_to_github_event,
@@ -218,9 +219,9 @@ async def _process_pr_review(
         review_body = build_review_body(results)
         review_comments = []
 
-    original_event = decision_to_github_event(decision)
-    github_event = decision_to_github_event(decision)
-    review_body = build_review_body_with_safety_note(results, original_event=original_event)
+    raw_event = decision_to_github_event(decision)
+    github_event = apply_safety_gate(raw_event)
+    review_body = build_review_body_with_safety_note(results, original_event=raw_event)
 
     try:
         await gh_client.post_review(

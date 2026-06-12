@@ -17,6 +17,7 @@ import structlog
 from src.orchestration.engine import AgentChain
 from src.config import GEMINI_API_KEY
 from src.review_poster import (
+    apply_safety_gate,
     build_review_body_with_safety_note,
     decision_to_github_event,
 )
@@ -189,11 +190,11 @@ async def main():
     chain = AgentChain()
     results = await chain.run(context)
 
-    # Build review body and map decision to GitHub event
+    # Build review body and map decision to GitHub event (safety gate applied)
     decision = results.get("decision", "escalate_to_human")
-    original_event = decision_to_github_event(decision)
-    github_event = decision_to_github_event(decision)
-    review_body = build_review_body_with_safety_note(results, original_event=original_event)
+    raw_event = decision_to_github_event(decision)
+    github_event = apply_safety_gate(raw_event)
+    review_body = build_review_body_with_safety_note(results, original_event=raw_event)
 
     # Post review
     await post_review(context, review_body, github_event)

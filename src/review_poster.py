@@ -87,26 +87,32 @@ def build_review_body(results: dict[str, Any]) -> str:
 
 
 def decision_to_github_event(decision: str) -> str:
-    """Map an agent-chain decision to a GitHub review event.
+    """Map an agent-chain decision to a GitHub review event (raw, no safety gate).
 
-    The safety gate downgrades ``auto_approve`` to ``COMMENT`` unless the
-    operator has explicitly enabled VERIFIED_AUTO_APPROVE (reserved for when
-    a sandboxed verification worker is producing real evidence).
+    Callers must apply the safety gate separately via :func:`apply_safety_gate`.
     """
     event_map = {
         "auto_approve": "APPROVE",
         "request_changes": "REQUEST_CHANGES",
         "escalate_to_human": "COMMENT",
     }
-    event = event_map.get(decision, "COMMENT")
+    return event_map.get(decision, "COMMENT")
 
+
+def apply_safety_gate(event: str) -> str:
+    """Downgrade APPROVE to COMMENT unless verified auto-approve is enabled.
+
+    The Verifier does not yet apply patches, write tests, or run project
+    commands in a sandbox, so an LLM-only ``auto_approve`` must not become
+    a binding GitHub APPROVE. This gate downgrades to COMMENT unless an
+    operator has explicitly enabled VERIFIED_AUTO_APPROVE.
+    """
     if event == "APPROVE" and not VERIFIED_AUTO_APPROVE:
         logger.warning(
             "auto_approve_downgraded",
             reason="no_verified_evidence",
         )
         return "COMMENT"
-
     return event
 
 

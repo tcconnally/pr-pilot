@@ -101,9 +101,11 @@ Generate the review body and any inline comments."""
         return AgentResult(
             agent_name=self.name,
             status=(
-                "pass"
+                "approved"
                 if result.get("decision") == "auto_approve"
-                else "escalate"
+                else "changes_requested"
+                if result.get("decision") == "request_changes"
+                else "escalated"
             ),
             summary=f"Decision: {result.get('decision')} (confidence: {result.get('confidence', 0):.0%})",
             findings=[

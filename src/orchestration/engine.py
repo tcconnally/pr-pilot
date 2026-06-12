@@ -25,7 +25,13 @@ logger = structlog.get_logger(__name__)
 
 
 class AgentChain:
-    """Orchestrates the 5-agent PR review pipeline."""
+    """Orchestrates the 5-agent PR review pipeline.
+
+    All agents are eagerly constructed because their __init__ is cheap
+    (only system prompts and config are loaded; the Gemini client is
+    lazily initialised on the first API call).  Lazy construction per
+    agent would add branching complexity with negligible memory savings.
+    """
 
     def __init__(self) -> None:
         self.reviewer = ReviewerAgent()

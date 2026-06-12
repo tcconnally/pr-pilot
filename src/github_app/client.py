@@ -65,7 +65,13 @@ class GitHubClient:
         return files
 
     async def get_repo_file_listing(self, owner: str, repo: str, path: str = "") -> list[str]:
-        """Get a listing of files in the repo (for test framework detection)."""
+        """Get a best-effort listing of files in the repo (for test framework detection).
+
+        File listing is best-effort: pagination is not handled, and repos with
+        more than ~1000 files in a single directory will produce an incomplete
+        listing. The result is only used to help the Tester agent guess the
+        test framework; an incomplete listing is harmless.
+        """
         url = f"{self.base_url}/repos/{owner}/{repo}/contents/{path}"
         async with httpx.AsyncClient() as client:
             resp = await client.get(url, headers=self.headers)

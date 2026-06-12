@@ -108,6 +108,11 @@ class BaseAgent(ABC):
         # Reuse the cached model when no schema is needed; create a fresh one
         # when the schema changes the generation_config (the 0.8.x SDK does not
         # support per-request config overrides on a cached model).
+        #
+        # NOTE: In the current agent set every agent passes a schema, so the
+        # cached-model fast-path is not exercised in production. When a future
+        # agent that makes schema‑less calls is added this path will activate
+        # automatically without any code changes.
         if schema:
             generation_config = {
                 "temperature": 0.2,

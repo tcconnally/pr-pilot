@@ -144,7 +144,7 @@ async def post_review(
             )
             logger.info("comment_posted", status=comment_resp.status_code)
         else:
-            logger.info("review_posted", pr=pr_number, event=event)
+            logger.info("review_posted", pr=pr_number, review_event=event)
 
 
 def build_review_body(results: dict) -> str:

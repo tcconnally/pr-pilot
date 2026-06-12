@@ -15,7 +15,12 @@ from typing import Any
 import structlog
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from src.config import GEMINI_API_KEY, GEMINI_MODEL, MAX_AGENT_RETRIES
+from src.config import (
+    AGENT_TIMEOUT_SECONDS,
+    GEMINI_API_KEY,
+    GEMINI_MODEL,
+    MAX_AGENT_RETRIES,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -93,15 +98,27 @@ class BaseAgent(ABC):
 
         # Recreate model with schema if needed
         import google.generativeai as genai
+
+        # Configure the SDK before constructing the model. Without this the
+        # generate_content call is unauthenticated and fails at runtime, even
+        # though the (unused) self.model property configured it elsewhere.
+        if not GEMINI_API_KEY:
+            raise RuntimeError("GEMINI_API_KEY not set — required for Gemini calls")
+        genai.configure(api_key=GEMINI_API_KEY)
+
         model = genai.GenerativeModel(
             model_name=self.model_name,
             system_instruction=self.system_prompt,
             generation_config=generation_config,
         )
 
-        # Run in thread pool (google-generativeai 0.8.x is synchronous)
+        # Run in thread pool (google-generativeai 0.8.x is synchronous), bounded
+        # by the configured per-agent timeout so a hung call cannot block forever.
         loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(None, model.generate_content, prompt)
+        response = await asyncio.wait_for(
+            loop.run_in_executor(None, model.generate_content, prompt),
+            timeout=AGENT_TIMEOUT_SECONDS,
+        )
 
         elapsed = time.monotonic() - start
         self.log.info("gemini_call", model=self.model_name, elapsed=round(elapsed, 2))

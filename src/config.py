@@ -33,6 +33,14 @@ MAX_AGENT_RETRIES: int = int(os.getenv("MAX_AGENT_RETRIES", "3"))
 AGENT_TIMEOUT_SECONDS: int = int(os.getenv("AGENT_TIMEOUT_SECONDS", "300"))
 MAX_DIFF_SIZE_BYTES: int = int(os.getenv("MAX_DIFF_SIZE_BYTES", "500_000"))
 
+# ── Review Safety ───────────────────────────────────────────────────
+# The Verifier currently judges generated patches/tests with an LLM only; it
+# does not apply patches, write tests, or run project commands in a sandbox.
+# Until real verification exists, an "auto_approve" decision must NEVER be
+# turned into a GitHub APPROVE. Setting this to true is reserved for when a
+# sandboxed verification worker is implemented and producing real evidence.
+VERIFIED_AUTO_APPROVE: bool = os.getenv("VERIFIED_AUTO_APPROVE", "").lower() == "true"
+
 # ── Paths ───────────────────────────────────────────────────────────
 PROJECT_ROOT: Path = Path(__file__).parent.parent
 AGENT_LOG_DIR: Path = Path(os.getenv("AGENT_LOG_DIR", str(PROJECT_ROOT / "logs" / "agents")))

@@ -10,15 +10,18 @@ import hmac
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request
 
 from src.orchestration.engine import AgentChain
 from src.github_app.client import GitHubClient
+from src.github_app.idempotency import build_delivery_key, default_store
 from src.config import (
     ALLOW_UNSIGNED_WEBHOOKS,
     GITHUB_WEBHOOK_SECRET,
     GITHUB_APP_ID,
     GITHUB_APP_PRIVATE_KEY,
+    MAX_DIFF_SIZE_BYTES,
+    VERIFIED_AUTO_APPROVE,
 )
 
 logger = structlog.get_logger(__name__)
@@ -55,10 +58,18 @@ def verify_signature(payload: bytes, signature: str) -> bool:
 @router.post("/github")
 async def github_webhook(
     request: Request,
+    background_tasks: BackgroundTasks,
     x_github_event: str = Header(default=""),
     x_hub_signature_256: str = Header(default=""),
+    x_github_delivery: str = Header(default=""),
 ) -> dict[str, Any]:
-    """Receive GitHub webhook events and trigger PR review."""
+    """Receive GitHub webhook events and acknowledge quickly.
+
+    Webhook processing must return fast: the full agent chain takes tens of
+    seconds, far longer than GitHub's delivery timeout, which would otherwise
+    trigger retries and duplicate reviews. We verify and dedupe synchronously,
+    then run the review in a background task and return 202 immediately.
+    """
     body = await request.body()
 
     # Verify signature
@@ -88,13 +99,46 @@ async def github_webhook(
     repo_name = repo.get("full_name", "")
     pr_title = pr.get("title", "")
     pr_description = pr.get("body", "") or ""
+    head_sha = pr.get("head", {}).get("sha", "")
 
     if not pr_number or not owner:
         logger.error("missing_pr_info")
         return {"status": "error", "detail": "Missing PR number or owner"}
 
-    logger.info("pr_event", owner=owner, repo=repo_name, pr=pr_number, action=action)
+    # Idempotency: collapse redeliveries and repeated synchronize events for the
+    # same head commit so we do not run the chain or post a review twice.
+    dedup_key = build_delivery_key(x_github_delivery, repo_name, pr_number, head_sha)
+    if not default_store.add(dedup_key):
+        logger.info("duplicate_delivery_skipped", key=dedup_key, pr=pr_number)
+        return {"status": "duplicate", "key": dedup_key}
 
+    logger.info("pr_event_accepted", owner=owner, repo=repo_name, pr=pr_number, action=action)
+
+    # Schedule the heavy work and acknowledge immediately.
+    background_tasks.add_task(
+        _process_pr_review,
+        owner=owner,
+        repo_name=repo_name,
+        pr_number=pr_number,
+        pr_title=pr_title,
+        pr_description=pr_description,
+        installation=installation,
+        dedup_key=dedup_key,
+    )
+    return {"status": "accepted", "pr": pr_number, "key": dedup_key}
+
+
+async def _process_pr_review(
+    *,
+    owner: str,
+    repo_name: str,
+    pr_number: int,
+    pr_title: str,
+    pr_description: str,
+    installation: dict[str, Any],
+    dedup_key: str,
+) -> dict[str, Any]:
+    """Background worker: run the agent chain and post the review to GitHub."""
     # Get installation token for this repo
     try:
         gh_client = GitHubClient(token="")  # will be replaced
@@ -119,6 +163,28 @@ async def github_webhook(
     except Exception as exc:
         logger.error("fetch_error", error=str(exc))
         return {"status": "error", "detail": f"Failed to fetch PR data: {exc}"}
+
+    # Enforce diff size limit before running the chain. Oversized PRs are not
+    # auto-reviewed; they are escalated to a human with an explanatory comment.
+    diff_bytes = len(diff_text.encode("utf-8")) if diff_text else 0
+    if diff_bytes > MAX_DIFF_SIZE_BYTES:
+        logger.warning(
+            "diff_too_large",
+            pr=pr_number,
+            diff_bytes=diff_bytes,
+            limit=MAX_DIFF_SIZE_BYTES,
+        )
+        msg = (
+            "## PR Pilot\n\n"
+            f"This PR's diff ({diff_bytes:,} bytes) exceeds the configured review "
+            f"limit ({MAX_DIFF_SIZE_BYTES:,} bytes). Skipping automated review and "
+            "escalating to a human reviewer."
+        )
+        try:
+            await gh_client.post_comment(owner, repo_name.split("/")[-1], pr_number, msg)
+        except Exception:
+            pass
+        return {"status": "skipped", "detail": "diff too large", "diff_bytes": diff_bytes}
 
     # Build context for the agent chain
     pr_context = {
@@ -155,6 +221,20 @@ async def github_webhook(
         "escalate_to_human": "COMMENT",
     }
     github_event = github_event_map.get(decision, "COMMENT")
+
+    # Safety gate: the Verifier does not yet apply patches, write tests, or run
+    # project commands in a sandbox, so an LLM-only "auto_approve" must not become
+    # a binding GitHub APPROVE. Downgrade to a COMMENT unless an operator has
+    # explicitly enabled verified auto-approve (reserved for when real
+    # verification evidence exists). See issues #6/#7.
+    if github_event == "APPROVE" and not VERIFIED_AUTO_APPROVE:
+        logger.warning("auto_approve_downgraded", pr=pr_number, reason="no_verified_evidence")
+        github_event = "COMMENT"
+        review_body = (
+            "> Note: PR Pilot suggested approval, but automated approval is "
+            "disabled until changes are verified in a sandbox. Posting as a "
+            "comment for human review.\n\n"
+        ) + review_body
 
     try:
         await gh_client.post_review(

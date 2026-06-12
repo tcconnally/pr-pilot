@@ -139,7 +139,6 @@ def build_review_body(results: dict) -> str:
     fixer = results.get("fixer", {})
     tester = results.get("tester", {})
     verifier = results.get("verifier", {})
-    escalator = results.get("escalator", {})
     decision = results.get("decision", "unknown")
 
     body = [

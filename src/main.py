@@ -8,12 +8,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import structlog
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from src.config import HOST, PORT, STATE_DIR
 from src.github_app.webhook import router as webhook_router
+from src import stripe_handler
 
 logger = structlog.get_logger(__name__)
 
@@ -85,3 +86,40 @@ async def dashboard_reviews():
             except Exception:
                 pass
     return {"reviews": reviews}
+
+
+# ── Stripe Checkout ─────────────────────────────────────────────────
+
+@app.post("/api/checkout")
+async def create_checkout(request: Request) -> JSONResponse:
+    """Create a Stripe Checkout session for a subscription plan."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    plan = body.get("plan", "team")
+    email = body.get("email")
+
+    try:
+        session = stripe_handler.create_checkout_session(plan, email)
+        return JSONResponse(session)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/webhook/stripe")
+async def stripe_webhook(request: Request, stripe_signature: str = Header(default="", alias="stripe-signature")):
+    """Receive Stripe webhook events for subscription lifecycle."""
+    payload = await request.body()
+
+    try:
+        result = stripe_handler.handle_webhook(payload, stripe_signature)
+        return JSONResponse(result)
+    except RuntimeError:
+        raise HTTPException(status_code=500, detail="Stripe webhook not configured")
+    except Exception as e:
+        logger.error("stripe_webhook_error", error=str(e))
+        raise HTTPException(status_code=400, detail="Webhook verification failed")

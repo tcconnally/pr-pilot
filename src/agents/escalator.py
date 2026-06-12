@@ -36,7 +36,7 @@ ESCALATOR_SCHEMA = {
             "type": "string",
             "enum": ["auto_approve", "request_changes", "escalate_to_human"],
         },
-        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "confidence": {"type": "number"},
         "reasoning": {"type": "string"},
         "review_body": {"type": "string"},
         "review_comments": {

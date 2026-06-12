@@ -14,7 +14,12 @@ from fastapi import APIRouter, Header, HTTPException, Request
 
 from src.orchestration.engine import AgentChain
 from src.github_app.client import GitHubClient
-from src.config import GITHUB_WEBHOOK_SECRET, GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY
+from src.config import (
+    ALLOW_UNSIGNED_WEBHOOKS,
+    GITHUB_WEBHOOK_SECRET,
+    GITHUB_APP_ID,
+    GITHUB_APP_PRIVATE_KEY,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -22,10 +27,21 @@ router = APIRouter(prefix="/webhook", tags=["github"])
 
 
 def verify_signature(payload: bytes, signature: str) -> bool:
-    """Verify GitHub webhook signature."""
+    """Verify GitHub webhook signature.
+
+    Fails closed: if no secret is configured we reject the request unless the
+    operator has explicitly opted into an unsigned-dev bypass via
+    ALLOW_UNSIGNED_WEBHOOKS=true. This must never be set in production.
+    """
     if not GITHUB_WEBHOOK_SECRET:
-        logger.warning("webhook_secret_not_configured")
-        return True  # Allow in dev
+        if ALLOW_UNSIGNED_WEBHOOKS:
+            logger.warning("webhook_secret_not_configured_dev_bypass")
+            return True
+        logger.error("webhook_secret_not_configured_rejecting")
+        return False
+
+    if not signature:
+        return False
 
     mac = hmac.new(
         GITHUB_WEBHOOK_SECRET.encode(),

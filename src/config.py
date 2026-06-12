@@ -13,6 +13,8 @@ load_dotenv()
 GITHUB_APP_ID: str = os.getenv("GITHUB_APP_ID", "")
 GITHUB_APP_PRIVATE_KEY: str = os.getenv("GITHUB_APP_PRIVATE_KEY", "")
 GITHUB_WEBHOOK_SECRET: str = os.getenv("GITHUB_WEBHOOK_SECRET", "")
+# Explicit, opt-in dev bypass for unsigned webhooks. Never enable in production.
+ALLOW_UNSIGNED_WEBHOOKS: bool = os.getenv("ALLOW_UNSIGNED_WEBHOOKS", "").lower() == "true"
 
 # Support private key as path or inline value
 if GITHUB_APP_PRIVATE_KEY and os.path.isfile(GITHUB_APP_PRIVATE_KEY):

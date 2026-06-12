@@ -92,7 +92,13 @@ def handle_webhook(payload: bytes, signature: str) -> dict:
         subscription_id = data.get("subscription")
         plan = data.get("metadata", {}).get("plan", "unknown")
         email = data.get("customer_details", {}).get("email", "unknown")
-        logger.info("subscription_started", customer=customer_id, plan=plan, email=email)
+        logger.info(
+            "subscription_started",
+            customer=customer_id,
+            subscription=subscription_id,
+            plan=plan,
+            email=email,
+        )
 
     elif event_type == "customer.subscription.deleted":
         customer_id = data.get("customer")

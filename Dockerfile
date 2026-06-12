@@ -16,6 +16,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY src/ src/
 COPY pyproject.toml .
 
+# Install the project itself so packaging metadata is the single source of
+# truth for runtime imports (catches drift between requirements.txt and
+# pyproject.toml at build time).
+RUN pip install --no-cache-dir --no-deps .
+
 # Create data dirs
 RUN mkdir -p data/reviews logs/agents
 

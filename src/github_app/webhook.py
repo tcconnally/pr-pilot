@@ -243,20 +243,50 @@ async def _process_pr_review(
     # R-3: filter inline comments to only those with valid path+line
     # in the actual diff. A single hallucinated path/line 422s the
     # entire review submission, losing all inline comments.
+    # We check: path is in changed_files AND the line falls inside
+    # a parsed diff hunk for that file (not just > 0 — the line must
+    # actually appear in the diff the LLM was given, otherwise it's a
+    # hallucination).
     if review_comments and diff_text:
+        # Build a map of file → set of valid line numbers from diff hunks.
+        import re as _re
+        _hunk_re = _re.compile(r'^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@')
+        _file_re = _re.compile(r'^diff --git a/(.+) b/(.+)$')
+        file_line_ranges: dict[str, set[int]] = {}
+        current_file: str | None = None
+        for raw_line in diff_text.splitlines():
+            fm = _file_re.match(raw_line)
+            if fm:
+                current_file = fm.group(2)  # new file path
+                if current_file not in file_line_ranges:
+                    file_line_ranges[current_file] = set()
+                continue
+            hm = _hunk_re.match(raw_line)
+            if hm and current_file:
+                start = int(hm.group(1))
+                count = int(hm.group(2) or 1)
+                file_line_ranges[current_file].update(range(start, start + count))
+
         valid_comments = []
         for c in review_comments:
             c_path = c.get("path", "")
             c_line = c.get("line", 0)
-            if c_path in changed_files and isinstance(c_line, int) and c_line > 0:
-                valid_comments.append(c)
-            else:
+            reason = ""
+            if c_path not in changed_files:
+                reason = "path not in changed_files"
+            elif not isinstance(c_line, int) or c_line <= 0:
+                reason = "invalid line number"
+            elif c_path in file_line_ranges and c_line not in file_line_ranges[c_path]:
+                reason = f"line {c_line} not in any diff hunk for {c_path}"
+            if reason:
                 logger.warning(
                     "dropping_invalid_comment",
                     path=c_path,
                     line=c_line,
-                    reason="path not in changed_files" if c_path not in changed_files else "invalid line",
+                    reason=reason,
                 )
+            else:
+                valid_comments.append(c)
         if len(valid_comments) < len(review_comments):
             logger.info(
                 "filtered_review_comments",

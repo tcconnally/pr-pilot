@@ -17,6 +17,7 @@ dependencies = [
     "tenacity>=8.0",
     "stripe>=9.0",
     "PyJWT[crypto]>=2.8",
+    "google-cloud-logging>=3.0",
 ]
 
 [project.optional-dependencies]

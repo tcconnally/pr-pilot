@@ -19,6 +19,7 @@ from src.agents.fixer import FixerAgent
 from src.agents.tester import TesterAgent
 from src.agents.verifier import VerifierAgent
 from src.agents.escalator import EscalatorAgent
+from src.cloud_logging import audit_logger
 from src.config import MAX_REVIEW_STATES, STATE_DIR
 
 logger = structlog.get_logger(__name__)
@@ -66,6 +67,11 @@ class AgentChain:
         """
         chain_id = f"pr-{pr_context.get('pr_number', 'unknown')}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}"
         logger.info("chain_started", chain_id=chain_id, repo=pr_context.get("repo_name"))
+        audit_logger.log_chain_event(
+            chain_id, "chain_started",
+            repo_name=pr_context.get("repo_name"),
+            pr_number=pr_context.get("pr_number"),
+        )
 
         results: dict[str, Any] = {
             "chain_id": chain_id,
@@ -78,6 +84,13 @@ class AgentChain:
         reviewer_result = await self.reviewer.run(pr_context)
         results["reviewer"] = self._serialize_result(reviewer_result)
         logger.info("agent_done", agent="reviewer", status=reviewer_result.status)
+        audit_logger.log_agent_event(
+            chain_id, "reviewer", "completed",
+            duration_seconds=reviewer_result.duration_seconds,
+            metadata={"status": reviewer_result.status, "findings_count": len(reviewer_result.findings)},
+            repo_name=pr_context.get("repo_name"),
+            pr_number=pr_context.get("pr_number"),
+        )
         if aborted := self._short_circuit(results, "reviewer", reviewer_result):
             return aborted
 
@@ -87,6 +100,13 @@ class AgentChain:
             logger.error(
                 "chain_aborted", chain_id=chain_id, reason="reviewer_error"
             )
+            audit_logger.log_chain_event(
+                chain_id, "chain_aborted",
+                decision="escalate_to_human",
+                autonomy=False,
+                repo_name=pr_context.get("repo_name"),
+                pr_number=pr_context.get("pr_number"),
+            )
             results["error"] = True
             results["error_reason"] = "Reviewer agent failed — pipeline aborted."
             results["decision"] = "escalate_to_human"
@@ -95,7 +115,7 @@ class AgentChain:
                 "summary": "Automated review pipeline failed. The reviewer agent encountered an error and was unable to analyze this PR. A human should review it manually.",
             }
             results["finished_at"] = datetime.now(timezone.utc).isoformat()
-            self._persist_results(chain_id, results)
+            self._save_state(chain_id, results)
             return results
 
         # ── Agent 2: Fixer ────────────────────────────────────────
@@ -106,6 +126,13 @@ class AgentChain:
         fixer_result = await self.fixer.run(fixer_context)
         results["fixer"] = self._serialize_result(fixer_result)
         logger.info("agent_done", agent="fixer", status=fixer_result.status)
+        audit_logger.log_agent_event(
+            chain_id, "fixer", "completed",
+            duration_seconds=fixer_result.duration_seconds,
+            metadata={"status": fixer_result.status, "patches_count": len(fixer_result.patches)},
+            repo_name=pr_context.get("repo_name"),
+            pr_number=pr_context.get("pr_number"),
+        )
         if aborted := self._short_circuit(results, "fixer", fixer_result):
             return aborted
 
@@ -117,6 +144,13 @@ class AgentChain:
         tester_result = await self.tester.run(tester_context)
         results["tester"] = self._serialize_result(tester_result)
         logger.info("agent_done", agent="tester", status=tester_result.status)
+        audit_logger.log_agent_event(
+            chain_id, "tester", "completed",
+            duration_seconds=tester_result.duration_seconds,
+            metadata={"status": tester_result.status, "tests_count": len(tester_result.patches)},
+            repo_name=pr_context.get("repo_name"),
+            pr_number=pr_context.get("pr_number"),
+        )
         if aborted := self._short_circuit(results, "tester", tester_result):
             return aborted
 
@@ -130,6 +164,13 @@ class AgentChain:
         verifier_result = await self.verifier.run(verifier_context)
         results["verifier"] = self._serialize_result(verifier_result)
         logger.info("agent_done", agent="verifier", status=verifier_result.status)
+        audit_logger.log_agent_event(
+            chain_id, "verifier", "completed",
+            duration_seconds=verifier_result.duration_seconds,
+            metadata={"status": verifier_result.status},
+            repo_name=pr_context.get("repo_name"),
+            pr_number=pr_context.get("pr_number"),
+        )
         if aborted := self._short_circuit(results, "verifier", verifier_result):
             return aborted
 
@@ -142,17 +183,40 @@ class AgentChain:
         }
         escalator_result = await self.escalator.run(escalator_context)
         results["escalator"] = self._serialize_result(escalator_result)
+        decision = escalator_result.metadata.get("decision", "unknown")
+        audit_logger.log_agent_event(
+            chain_id, "escalator", "completed",
+            duration_seconds=escalator_result.duration_seconds,
+            metadata={"decision": decision, "confidence": escalator_result.metadata.get("confidence")},
+            repo_name=pr_context.get("repo_name"),
+            pr_number=pr_context.get("pr_number"),
+        )
         if aborted := self._short_circuit(results, "escalator", escalator_result):
             return aborted
         logger.info(
             "chain_complete",
             chain_id=chain_id,
-            decision=escalator_result.metadata.get("decision", "unknown"),
-        )
+            decision=decision,
+            )
 
         results["completed_at"] = datetime.now(timezone.utc).isoformat()
-        results["decision"] = escalator_result.metadata.get("decision", "escalate_to_human")
+        results["decision"] = decision
         results["autonomy"] = results["decision"] != "escalate_to_human"
+
+        # Calculate total chain duration
+        total_duration = sum(
+            v.get("duration_seconds", 0)
+            for v in results.values()
+            if isinstance(v, dict) and "duration_seconds" in v
+        )
+        audit_logger.log_chain_event(
+            chain_id, "chain_complete",
+            decision=results["decision"],
+            autonomy=results["autonomy"],
+            total_duration_seconds=total_duration,
+            repo_name=pr_context.get("repo_name"),
+            pr_number=pr_context.get("pr_number"),
+        )
 
         # Persist review state
         self._save_state(chain_id, results)
@@ -178,6 +242,13 @@ class AgentChain:
             chain_id=results["chain_id"],
             agent=agent_name,
             summary=result.summary,
+        )
+        audit_logger.log_chain_event(
+            results["chain_id"], "chain_aborted",
+            decision="escalate_to_human",
+            autonomy=False,
+            repo_name=results.get("repo_name"),
+            pr_number=results.get("pr_number"),
         )
         results["pipeline_error"] = {"agent": agent_name, "summary": result.summary}
         results["decision"] = "escalate_to_human"

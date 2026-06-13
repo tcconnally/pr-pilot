@@ -1,0 +1,27 @@
+name: Smoke Test
+
+on:
+  push:
+    branches: [main, ci/smoke-tests]
+  pull_request:
+    branches: [main]
+
+jobs:
+  demo-runs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+      - name: Smoke test — package imports
+        env:
+          GEMINI_API_KEY: stub
+        run: python -c "import src.main; print('import OK')"
+      - name: Unit tests
+        env:
+          GEMINI_API_KEY: stub
+        run: python -m pytest tests/ -v
